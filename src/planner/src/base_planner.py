@@ -10,6 +10,8 @@ from math import *
 import copy
 import argparse
 
+import json
+
 ROBOT_SIZE = 0.2552  # width and height of robot in terms of stage unit
 
 
@@ -20,14 +22,15 @@ def dump_action_table(action_table, filename):
         action_table {dict} -- your mdp action table. It should be of form {'1,2,0': (1, 0), ...}
         filename {str} -- output filename
     """
-    tab = dict()
-    for k, v in action_table.items():
-        key = [str(i) for i in k]
-        key = ','.join(key)
-        tab[key] = v
+    # tab = dict()
+    # for k, v in action_table.items():
+    #     key = [str(i) for i in k]
+    #     print(key)
+    #     key = ','.join(key)
+    #     tab[key] = v
 
     with open(filename, 'w') as fout:
-        json.dump(tab, fout)
+        json.dump(action_table, fout)
 
 
 class Planner:
@@ -74,10 +77,16 @@ class Planner:
         """
         self.map = rospy.wait_for_message('/map', OccupancyGrid).data
 
-        # TODO: FILL ME! implement obstacle inflation function and define self.aug_map = new_mask
+        self.aug_map = np.array(self.map, dtype=int).reshape(self.world_height, self.world_width).T
+        self.aug_map[self.aug_map == -1] = 0
+        temp = copy.deepcopy(self.aug_map)
 
-        # you should inflate the map to get self.aug_map
-        self.aug_map = copy.deepcopy(self.map)
+        # inflate obstacles 
+        for x in range(self.inflation_ratio, self.world_width - self.inflation_ratio):
+            for y in range(self.inflation_ratio, self.world_height - self.inflation_ratio):
+                if (temp[x - self.inflation_ratio:x + self.inflation_ratio, y - self.inflation_ratio:y + self.inflation_ratio]).sum() >= 100:
+                    self.aug_map[x,y] = 100
+
 
     def _pose_callback(self, msg):
         """get the raw pose of the robot from ROS
@@ -96,9 +105,7 @@ class Planner:
         return (goal_position.x, goal_position.y)
 
     def set_goal(self, x, y, theta=0):
-        """set the goal of the planner
-
-        Arguments:
+        """set the goal of the plannerfactor
             x {int} -- x of the goal
             y {int} -- y of the goal
 
@@ -181,7 +188,9 @@ class Planner:
 
         Each action could be: (v, \omega) where v is the linear velocity and \omega is the angular velocity
         """
+        
         self.action_seq = []
+
 
     def get_current_continuous_state(self):
         """Our state is defined to be the tuple (x,y,theta). 
@@ -225,6 +234,29 @@ class Planner:
         Returns:
             bool -- True for collision, False for non-collision
         """
+        
+        x_scaled = int(np.floor(x/self.resolution))
+        y_scaled = int(np.floor(y/self.resolution))
+        robot_size = int(np.floor(ROBOT_SIZE/self.resolution))
+        
+        x_left = x_scaled - robot_size
+        if x_left < 0:
+            return True
+
+        x_right = x_scaled + robot_size
+        if x_right > self.world_width:
+            return True
+        
+        y_lower = y_scaled - robot_size
+        if y_lower < 0:
+            return True
+
+        y_upper = y_scaled + robot_size
+        if y_upper > self.world_height:
+            return True
+
+        if np.sum(self.aug_map[ x_left:x_right+1, y_lower:y_upper+1]) > 0:
+            return True
 
         return False
 
@@ -340,8 +372,7 @@ class Planner:
             rospy.sleep(0.6)
             self.controller.publish(msg)
             rospy.sleep(0.6)
-            time.sleep(1)
-
+            #time.sleep(1)
 
 
 if __name__ == "__main__":
@@ -366,11 +397,12 @@ if __name__ == "__main__":
         width = 200
         height = 200
         resolution = 0.05
-
+    
     # TODO: You should change this value accordingly
     inflation_ratio = 3
     planner = Planner(width, height, resolution, inflation_ratio=inflation_ratio)
     planner.set_goal(goal[0], goal[1])
+
     if planner.goal is not None:
         planner.generate_plan()
 
